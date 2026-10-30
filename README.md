@@ -8,13 +8,7 @@ Patch and boot custom iOS 27 on A12/A13 devices, from a Mac. Built on the usblit
 
 ## Why Liter8-plus?
 
-Liter8-plus is an enhanced fork of the original Liter8 project, focusing on stability, broader hardware compatibility, and improved cellular functionality.
-
-**Key Improvements over Liter8:**
-- **Full A12/A13 Support:** While the original was primarily targeted at iPhone 11, Liter8-plus provides reviewed profiles for the entire A12/A13 family, including iPhone XS, XS Max, and 11 Pro/Pro Max.
-- **Enhanced Cellular/Voice:** Integrates the `l8fdr.dylib` sealed-calibration fix and `CommCenter` activation patches by default, enabling registered network access and voice calls (via IMS/WiFi Calling).
-- **Injection Stability:** Refined `launchdhook` interposition with improved environment handling and safety guards to reduce crashes during process spawning.
-- **Verified Profiles:** Expanded the set of reviewed (non-experimental) profiles for newer firmware builds.
+Liter8-plus is an enhanced fork of the original Liter8 project, focusing on stability and broader hardware compatibility.
 
 Two things before you go any further.
 
@@ -39,7 +33,7 @@ And it supports A12/A13 devices (iPhone XR, XS, XS Max, 11, 11 Pro, 11 Pro Max).
 - MobileBackup2. Fails because the boot has no normal persona state. This is fundamentally gated by the Secure Enclave (SEP) and cannot be resolved without a working SEP.
 - 11 Pro and Pro Max. profiles exist and are now reviewed.
 
-PRs welcome on any of these, especially SEP. The Pro and Pro Max are open too, if you own one and want to take the port on, i'll help where i can. Or if you'd rather help on the hardware side, there's a [coffee link](https://buymeacoffee.com/xplo8e) and that's what it'd go towards. Either route is fine, and so is neither.
+PRs welcome on any of these, especially SEP.
 
 ## Builds and devices
 
@@ -47,8 +41,8 @@ PRs welcome on any of these, especially SEP. The Pro and Pro Max are open too, i
 | --------------- | ---------- | --------- | ------------ | ------------ |
 | iOS 27.0 beta 4 | `24A5390f` | run       | -            | -            |
 | iOS 27.0 RC     | `24A435`   | run       | -            | -            |
-| iOS 27.0        | `24A437`   | run       | run           | run           |
-| iOS 27.0.1      | `24A446`   | run       | run           | run           |
+| iOS 27.0        | `24A437`   | run       | experimental | experimental |
+| iOS 27.0.1      | `24A446`   | run       | experimental | experimental |
 | iOS 27.2 beta 1 | `24B5084k` | run       | -            | -            |
 | iOS 27.2 beta 2 | `24B5089g` | run       | -            | -            |
 | iOS 27.2 beta 3 | `24B5099f` | run       | -            | -            |
