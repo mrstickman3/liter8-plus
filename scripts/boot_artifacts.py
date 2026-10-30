@@ -1,0 +1,353 @@
+"""Build normal-boot artifacts from semantic BuildManifest components."""
+
+from __future__ import annotations
+
+import os
+import hashlib
+import json
+import shutil
+import tempfile
+from pathlib import Path
+
+from liter8_workflow import Context, WorkflowError, run
+
+
+# Output names are the stable interface consumed by the device boot command.
+# Source filenames are intentionally absent; BuildManifest supplies them.
+PASSTHROUGH_IMG4 = [
+    ("RestoreLogo", "RestoreLogo.img4", "rlgo"),
+    ("ANE", "ANE.img4", "anef"),
+    ("AOP", "AOP.img4", "aopf"),
+    ("AVE", "AVE.img4", "avef"),
+    ("Ap,SecurePageTableMonitor", "SPTM.img4", "sptm"),
+    ("GFX", "GFX.img4", "gfxf"),
+    ("ISP", "ISP.img4", "ispf"),
+    ("PMP", "PMP.img4", "pmpf"),
+    ("StaticTrustCache", "StaticTrustCache.img4", "trst"),
+    ("RestoreTrustCache", "RestoreTrustCache.img4", "rtsc"),
+    ("SIO", "SIO.img4", "siof"),
+    ("WCHFirmwareUpdater", "WCH.img4", "wchf"),
+    ("SEP", "SEP.img4", "rsep"),
+]
+
+TRUST_CACHES = {"StaticTrustCache", "RestoreTrustCache"}
+
+def selected_passthrough(
+    components: dict[str, str], mode: str, *, static_trust_cache: bool = False,
+    optional_firmware: frozenset[str] = frozenset()
+) -> list[tuple[str, str, str]]:
+    """Firmware from PASSTHROUGH_IMG4 that the selected BuildManifest identity has.
+
+    Exactly one trust cache is sent. n104 boots both modes with
+    RestoreTrustCache; a profile whose normal boot needs the System-volume
+    cache sets static_trust_cache.
+
+    Everything else is mandatory unless the profile names it in
+    optional_firmware. That list comes from the reviewed profile, never from
+    which components happen to be present: deciding by presence means an
+    identity missing an image it should carry passes silently, and
+    validate_boot_set derives its required filenames from this same result, so
+    nothing downstream would notice before the chain reached the device.
+
+    The empty default is the conservative one and the state of every profile
+    registered today, which makes the whole set mandatory. j171aap is the known
+    exception, being A12/PPL with no SPTM and therefore none of SPTM, PMP or
+    WCH, and it will say so in its own profile.
+    """
+    trust_cache = (
+        "StaticTrustCache" if mode == "normal" and static_trust_cache
+        else "RestoreTrustCache"
+    )
+    unknown = sorted(optional_firmware - {entry[0] for entry in PASSTHROUGH_IMG4})
+    if unknown:
+        raise WorkflowError(
+            f"profile marks firmware optional that is not passthrough: {', '.join(unknown)}"
+        )
+    required = {
+        entry[0] for entry in PASSTHROUGH_IMG4
+        if entry[0] not in optional_firmware and entry[0] not in TRUST_CACHES
+    } | {trust_cache}
+    missing = sorted(required - components.keys())
+    if missing:
+        raise WorkflowError(f"BuildManifest is missing required boot firmware: {', '.join(missing)}")
+    return [
+        entry for entry in PASSTHROUGH_IMG4
+        if entry[0] in components and (entry[0] not in TRUST_CACHES or entry[0] == trust_cache)
+    ]
+
+
+def has_txm(components: dict[str, str], mode: str) -> bool:
+    """Reject a partial SPTM/TXM pair instead of producing an incomplete chain."""
+    txm_name = (
+        "Ap,TrustedExecutionMonitor" if mode == "normal"
+        else "Ap,RestoreTrustedExecutionMonitor"
+    )
+    has_sptm = "Ap,SecurePageTableMonitor" in components
+    has_monitor = txm_name in components
+    if has_sptm != has_monitor:
+        raise WorkflowError(f"BuildManifest has an incomplete {mode} SPTM/TXM pair")
+    return has_monitor
+
+
+def normal_boot_plans(*, patch_txm: bool) -> tuple[str, str | None]:
+    """Kernel and TXM plans for a normal boot, as (kernel_plan, txm_plan).
+
+    Every normal boot is built for runtime function hooks with TXM's policy
+    flags on, by operator decision; there is no switch. Both plans weaken code
+    signing for every process, and each covers one code-signing monitor and is
+    inert where that monitor is absent: kernel boot-jit carries the PPL patches
+    (only a kernel profile that opts in gets any) and clears the exception-port
+    behavior enforcement byte, and txm boot-permissive turns on the policy flags
+    and lets TXM approve the debug mapping a modified code page needs before it
+    can execute again. No TXM in the identity means no TXM plan.
+    """
+    return "boot-jit", "boot-permissive" if patch_txm else None
+
+
+def ticket_from_environment() -> Path:
+    value = os.environ.get("LITER8_AP_TICKET")
+    if not value:
+        raise WorkflowError("get-boot requires --ticket <apticket.im4m>")
+    ticket = Path(value).resolve()
+    if not ticket.is_file():
+        raise WorkflowError(f"AP ticket does not exist: {ticket}")
+    return ticket
+
+
+def create_img4(
+    context: Context,
+    im4p: Path,
+    ticket: Path,
+    output: Path,
+    *,
+    fourcc: str | None = None,
+) -> None:
+    print(f"[*] signing IMG4: {output.name}", flush=True)
+    command: list[object] = [context.liter8, "img4", "create", im4p, ticket, output]
+    if fourcc:
+        command += ["--fourcc", fourcc]
+    run(command)
+
+
+def publish_directory(staging: Path, destination: Path) -> None:
+    """Replace the previous output only after the new set is complete."""
+    # The destination's parent is already the selected Liter8 work directory.
+    # Keep rollback state beside it instead of creating work-dir/.liter8 again.
+    previous = destination.parent / ".Ramdisk.previous"
+    if previous.exists():
+        shutil.rmtree(previous)
+    if destination.exists():
+        os.replace(destination, previous)
+    try:
+        os.replace(staging, destination)
+    except Exception:
+        if previous.exists() and not destination.exists():
+            os.replace(previous, destination)
+        raise
+    if previous.exists():
+        shutil.rmtree(previous)
+
+
+def write_boot_manifest(
+    context: Context,
+    staging: Path,
+    mode: str,
+    *,
+    kernel_plan: str | None = None,
+    txm_plan: str | None = None,
+) -> None:
+    """Bind a device command to the exact artifact family it is about to send."""
+    artifacts = {}
+    for path in sorted(staging.iterdir()):
+        if not path.is_file() or path.name.startswith("."):
+            continue
+        digest = hashlib.sha256()
+        with path.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+        artifacts[path.name] = {
+            "bytes": path.stat().st_size,
+            "sha256": digest.hexdigest(),
+        }
+    document = {
+        "schema": 1,
+        "profileID": context.profile_id,
+        "mode": mode,
+        "artifacts": artifacts,
+    }
+    if kernel_plan is not None:
+        document["kernelPlan"] = kernel_plan
+    # Recorded for the same reason as the kernel plan: boot-permissive relaxes
+    # code signing for every process, so which TXM a boot set carries must be
+    # visible.
+    if txm_plan is not None:
+        document["txmPlan"] = txm_plan
+    (staging / "liter8-boot.json").write_text(
+        json.dumps(document, indent=2, sort_keys=True) + "\n"
+    )
+
+
+def build_normal_boot() -> None:
+    context = Context.load()
+    ticket = ticket_from_environment()
+    firmware = selected_passthrough(
+        context.components, "normal",
+        static_trust_cache=context.normal_boot_static_trust_cache,
+        optional_firmware=context.optional_passthrough_firmware,
+    )
+    patch_txm = has_txm(context.components, "normal")
+    kernel_plan, txm_plan = normal_boot_plans(patch_txm=patch_txm)
+
+    # Build beside .liter8 first. A failed resolver or signing step leaves the
+    # operator's previous Ramdisk directory intact.
+    with tempfile.TemporaryDirectory(prefix="boot-staging-", dir=context.state) as directory:
+        staging = Path(directory)
+
+        print("[*] normal boot: patching iBSS", flush=True)
+        ibss = staging / "iBSS.raw"
+        context.extract_im4p(context.component("iBSS"), ibss)
+        context.apply("iboot", "ibss-normal", ibss, record_name="boot-ibss-normal")
+        for plan in context.normal_ibss_additional_plans:
+            context.apply("iboot", plan, ibss, record_name=f"boot-{plan}")
+
+        # iBEC needs a patched IM4P before the device ticket is attached.
+        print("[*] normal boot: patching and signing iBEC", flush=True)
+        ibec_raw = staging / ".iBEC.raw"
+        ibec_im4p = staging / ".iBEC.im4p"
+        ibec_source = context.component("iBEC")
+        context.extract_im4p(ibec_source, ibec_raw)
+        context.apply("iboot", "ibss-normal", ibec_raw, record_name="boot-ibec")
+        context.repack_im4p(ibec_source, ibec_raw, ibec_im4p)
+        create_img4(context, ibec_im4p, ticket, staging / "iBEC.img4")
+
+        # LLB and iBoot remain raw because the downstream USB boot sequence
+        # sends these payloads in that representation.
+        print("[*] normal boot: extracting LLB and iBoot", flush=True)
+        context.extract_im4p(context.component("LLB"), staging / "LLB.raw")
+        context.extract_im4p(context.component("iBoot"), staging / "iBoot.raw")
+
+        print("[*] normal boot: signing firmware payloads", flush=True)
+        for component, output_name, fourcc in firmware:
+            create_img4(
+                context,
+                context.component(component),
+                ticket,
+                staging / output_name,
+                fourcc=fourcc,
+            )
+
+        if patch_txm:
+            print("[*] normal boot: patching TXM", flush=True)
+            txm = staging / ".TXM.im4p"
+            shutil.copy2(context.component("Ap,TrustedExecutionMonitor"), txm)
+            context.apply("txm", txm_plan, txm, record_name="boot-txm")
+            create_img4(context, txm, ticket, staging / "TXM.img4")
+
+        print("[*] normal boot: patching DeviceTree", flush=True)
+        devicetree = staging / ".DeviceTree.im4p"
+        shutil.copy2(context.component("DeviceTree"), devicetree)
+        context.apply(
+            "devicetree", "normal", devicetree,
+            record_name="boot-devicetree", capture_records=False,
+        )
+        create_img4(
+            context, devicetree, ticket, staging / "DeviceTree.img4", fourcc="rdtr"
+        )
+
+        print("[*] normal boot: patching kernelcache", flush=True)
+        kernel = staging / ".Kernelcache.im4p"
+        shutil.copy2(context.component("KernelCache"), kernel)
+        context.apply("kernel", kernel_plan, kernel, record_name="boot-kernel")
+        create_img4(
+            context, kernel, ticket, staging / "Kernelcache.img4", fourcc="rkrn"
+        )
+
+        # Dot-prefixed intermediates are not part of the public boot artifact set.
+        for intermediate in staging.glob(".*"):
+            intermediate.unlink()
+        write_boot_manifest(
+            context, staging, "normal", kernel_plan=kernel_plan, txm_plan=txm_plan
+        )
+        publish_directory(staging, context.work / "Ramdisk")
+
+    print("[+] normal boot artifacts are ready in Ramdisk", flush=True)
+
+
+def build_restore_boot() -> None:
+    """Build the ticketed SSH restore-ramdisk artifact set."""
+    context = Context.load()
+    ticket = ticket_from_environment()
+    firmware = selected_passthrough(
+        context.components, "restore",
+        optional_firmware=context.optional_passthrough_firmware,
+    )
+    patch_txm = has_txm(context.components, "restore")
+
+    with tempfile.TemporaryDirectory(prefix="rd-staging-", dir=context.state) as directory:
+        staging = Path(directory)
+
+        print("[*] SSHRD: patching iBSS", flush=True)
+        ibss = staging / "iBSS.raw"
+        context.extract_im4p(context.component("iBSS"), ibss)
+        context.apply("iboot", "ibss-ramdisk", ibss, record_name="rd-ibss")
+        # The selected profile may add a board-specific display handoff (n104
+        # currently does). Extra plans are intentionally applied only to iBSS;
+        # iBEC must retain its own display initialization behavior.
+        for plan in context.restore_ibss_additional_plans:
+            context.apply("iboot", plan, ibss, record_name=f"rd-{plan}")
+
+        print("[*] SSHRD: patching and signing iBEC", flush=True)
+        ibec_raw = staging / ".iBEC.raw"
+        ibec_im4p = staging / ".iBEC.im4p"
+        ibec_source = context.component("iBEC")
+        context.extract_im4p(ibec_source, ibec_raw)
+        context.apply("iboot", "ibss-ramdisk", ibec_raw, record_name="rd-ibec")
+        context.repack_im4p(ibec_source, ibec_raw, ibec_im4p)
+        create_img4(context, ibec_im4p, ticket, staging / "iBEC.img4")
+
+        print("[*] SSHRD: signing firmware payloads", flush=True)
+        for component, output_name, fourcc in firmware:
+            create_img4(
+                context,
+                context.component(component),
+                ticket,
+                staging / output_name,
+                fourcc=fourcc,
+            )
+
+        if patch_txm:
+            print("[*] SSHRD: patching TXM", flush=True)
+            txm = staging / ".TXM.im4p"
+            shutil.copy2(context.component("Ap,RestoreTrustedExecutionMonitor"), txm)
+            context.apply("txm", "restore", txm, record_name="rd-txm")
+            create_img4(context, txm, ticket, staging / "TXM.img4")
+
+        print("[*] SSHRD: patching DeviceTree", flush=True)
+        devicetree = staging / ".DeviceTree.im4p"
+        shutil.copy2(context.component("RestoreDeviceTree"), devicetree)
+        context.apply(
+            "devicetree", "restore", devicetree,
+            record_name="rd-devicetree", capture_records=False,
+        )
+        create_img4(
+            context, devicetree, ticket, staging / "DeviceTree.img4", fourcc="rdtr"
+        )
+
+        print("[*] SSHRD: patching kernelcache", flush=True)
+        kernel = staging / ".Kernelcache.im4p"
+        shutil.copy2(context.component("RestoreKernelCache"), kernel)
+        context.apply("kernel", "restore", kernel, record_name="rd-kernel")
+        create_img4(
+            context, kernel, ticket, staging / "Kernelcache.img4", fourcc="rkrn"
+        )
+
+        print("[*] SSHRD: building and signing restore ramdisk", flush=True)
+        from sshrd import build_sshrd
+        build_sshrd(context, ticket, staging / "RestoreRamdisk.img4")
+
+        for intermediate in staging.glob(".*"):
+            intermediate.unlink()
+        write_boot_manifest(context, staging, "restore")
+        publish_directory(staging, context.work / "Ramdisk")
+
+    print("[+] SSH restore boot artifacts are ready in Ramdisk", flush=True)
