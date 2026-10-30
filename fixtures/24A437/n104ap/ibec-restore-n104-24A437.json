@@ -1,0 +1,50 @@
+{
+  "expectedOutputSHA256" : "6bbb8aa6048deb54131285ebae2a43a2cf836717ab42952a68f29fcb55457bf3",
+  "expectedPatches" : [
+    {
+      "id" : "ibss.validate-asn1.branch",
+      "offset" : 145128,
+      "originalBytes" : "01070054",
+      "replacementBytes" : "1f2003d5"
+    },
+    {
+      "id" : "ibss.validate-asn1.result",
+      "offset" : 145132,
+      "originalBytes" : "e00314aa",
+      "replacementBytes" : "000080d2"
+    },
+    {
+      "id" : "ibss.boot-args.adrp",
+      "offset" : 174604,
+      "originalBytes" : "620800f0",
+      "replacementBytes" : "021200d0"
+    },
+    {
+      "id" : "ibss.boot-args.add",
+      "offset" : 174608,
+      "originalBytes" : "423c3091",
+      "replacementBytes" : "42003f91"
+    },
+    {
+      "id" : "ibss.boot-args.string",
+      "offset" : 2543552,
+      "originalBytes" : "0000000000000000000000000000000000000000000000000000",
+      "replacementBytes" : "2d76207764743d2d312072643d6d6430202d726573746f726500"
+    },
+    {
+      "id" : "ibec.recovery-nonce.preserve",
+      "offset" : 222888,
+      "originalBytes" : "48010837",
+      "replacementBytes" : "0a000014"
+    }
+  ],
+  "expectedSize" : 2563464,
+  "resolver" : "ibec-restore",
+  "sha256" : "0a595a23eb3f7e2b2145d5ea4e9df419635b6cf527b11c3d24a480c6a8285bf8",
+  "target" : {
+    "board" : "n104ap",
+    "build" : "24A437",
+    "component" : "iBEC",
+    "device" : "iPhone 11"
+  }
+}

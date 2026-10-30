@@ -1,0 +1,20 @@
+{
+  "expectedOutputSHA256" : "18fa405f7fd40efa4a885a866234b2c4eafda178b68e895055da5129895ebb68",
+  "expectedPatches" : [
+    {
+      "id" : "restored-external.fdr-result",
+      "offset" : 518216,
+      "originalBytes" : "e0031aaa",
+      "replacementBytes" : "000080d2"
+    }
+  ],
+  "expectedSize" : 3356976,
+  "resolver" : "restored-external-fdr",
+  "sha256" : "c56ad938de7c0844c95ebcf7df417288b5d6eb9b655350f00a31b7d02d18c770",
+  "target" : {
+    "board" : "n104ap",
+    "build" : "24A437",
+    "component" : "restored_external",
+    "device" : "iPhone 11"
+  }
+}

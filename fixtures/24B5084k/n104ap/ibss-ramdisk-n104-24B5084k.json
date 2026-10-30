@@ -1,0 +1,44 @@
+{
+  "expectedOutputSHA256" : "68883ae9716ce2c4fdec7ed3099d3f16e1870325d488144893f30814e4b90ffa",
+  "expectedPatches" : [
+    {
+      "id" : "ibss.validate-asn1.branch",
+      "offset" : 144992,
+      "originalBytes" : "01070054",
+      "replacementBytes" : "1f2003d5"
+    },
+    {
+      "id" : "ibss.validate-asn1.result",
+      "offset" : 144996,
+      "originalBytes" : "e00314aa",
+      "replacementBytes" : "000080d2"
+    },
+    {
+      "id" : "ibss.boot-args.adrp",
+      "offset" : 174468,
+      "originalBytes" : "620800f0",
+      "replacementBytes" : "021200f0"
+    },
+    {
+      "id" : "ibss.boot-args.add",
+      "offset" : 174472,
+      "originalBytes" : "423c1491",
+      "replacementBytes" : "42001f91"
+    },
+    {
+      "id" : "ibss.boot-args.string",
+      "offset" : 2545600,
+      "originalBytes" : "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "replacementBytes" : "72643d6d6430202d76207764743d2d312064656275673d30783230313465206261636b6c696768742d6c6576656c3d3130323400"
+    }
+  ],
+  "expectedSize" : 2565536,
+  "resolver" : "ibss-ramdisk",
+  "sha256" : "61a38b979a7901e5469e6b5563dd3a6280acaf787efa12474d954c6113c28435",
+  "target" : {
+    "board" : "n104ap",
+    "build" : "24B5084k",
+    "component" : "iBSS",
+    "device" : "iPhone 11"
+  }
+}
